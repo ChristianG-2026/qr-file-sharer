@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-QR Code File Sharer – GUI v3
+QR Code File Sharer – GUI
 """
 
 import socket
@@ -44,7 +44,7 @@ TEXT_MED    = "#e6ecf8"
 TEXT_LO     = "#b8c5df"
 FONT_MONO   = "Consolas"
 APP_NAME    = "QR File Sharer"
-APP_VER     = "3.1"
+APP_VER     = "1.0.3"
 WIN_W, WIN_H = 1120, 820
 SIDEBAR_W    = 420
 
