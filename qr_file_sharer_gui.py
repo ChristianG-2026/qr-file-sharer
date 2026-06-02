@@ -6,7 +6,6 @@ QR Code File Sharer – GUI
 import socket
 import threading
 import tkinter as tk
-import ctypes
 import ipaddress
 import sys
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -20,6 +19,13 @@ import customtkinter as ctk
 import qrcode
 from PIL import Image, ImageDraw
 import pyperclip
+
+try:
+    from tkinterdnd2 import COPY, DND_FILES, TkinterDnD
+except Exception:
+    COPY = "copy"
+    DND_FILES = None
+    TkinterDnD = None
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -45,7 +51,7 @@ TEXT_MED    = "#e6ecf8"
 TEXT_LO     = "#b8c5df"
 FONT_MONO   = "Consolas"
 APP_NAME    = "QR File Sharer"
-APP_VER     = "1.0.4"
+APP_VER     = "1.0.5"
 WIN_W, WIN_H = 1120, 820
 SIDEBAR_W    = 420
 
@@ -184,11 +190,10 @@ class App(ctk.CTk):
         self._log_lines: list[str] = []
         self._log_window = None
         self._log_popup_text = None
-        self._drop_window_procs = {}
-        self._drop_callbacks = []
+        self._dnd_enabled = False
 
         self._build()
-        self._enable_native_file_drop()
+        self._enable_file_drop()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _set_window_icon(self):
@@ -206,89 +211,65 @@ class App(ctk.CTk):
         self._build_sidebar()
         self._build_content()
 
-    def _enable_native_file_drop(self):
-        if sys.platform != "win32":
+    def _enable_file_drop(self):
+        if TkinterDnD is None or DND_FILES is None:
+            self._log_write("Drag-and-drop ist nicht verfuegbar: tkinterdnd2 fehlt.")
             return
 
-        self.update_idletasks()
-        hwnds = {
-            int(self.winfo_id()),
-            int(self._drop.winfo_id()),
-            int(self._sb.winfo_id()),
-            int(self._sb_content.winfo_id()),
-        }
-
-        user32 = ctypes.windll.user32
-        shell32 = ctypes.windll.shell32
-        WM_DROPFILES = 0x0233
-        GWLP_WNDPROC = -4
-
-        user32.SetWindowLongPtrW.restype = ctypes.c_void_p
-        user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-        user32.CallWindowProcW.restype = ctypes.c_longlong
-        user32.CallWindowProcW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
-        shell32.DragAcceptFiles.argtypes = [ctypes.c_void_p, ctypes.c_bool]
-        shell32.DragQueryFileW.restype = ctypes.c_uint
-        shell32.DragFinish.argtypes = [ctypes.c_void_p]
-
-        WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p)
-
-        def make_proc(hwnd):
-            def wnd_proc(window, msg, wparam, lparam):
-                if msg == WM_DROPFILES:
-                    self._handle_native_drop(int(wparam))
-                    return 0
-                return user32.CallWindowProcW(self._drop_window_procs[hwnd], window, msg, wparam, lparam)
-            return WNDPROC(wnd_proc)
-
-        for hwnd in hwnds:
-            if hwnd in self._drop_window_procs:
-                continue
-            shell32.DragAcceptFiles(ctypes.c_void_p(hwnd), True)
-            callback = make_proc(hwnd)
-            previous = user32.SetWindowLongPtrW(ctypes.c_void_p(hwnd), GWLP_WNDPROC, ctypes.cast(callback, ctypes.c_void_p))
-            if previous:
-                self._drop_window_procs[hwnd] = previous
-                self._drop_callbacks.append(callback)
-
-    def _handle_native_drop(self, drop_handle: int):
-        if self._uploading:
-            return
-
-        shell32 = ctypes.windll.shell32
-        count = shell32.DragQueryFileW(ctypes.c_void_p(drop_handle), 0xFFFFFFFF, None, 0)
-        selected = None
         try:
-            for index in range(count):
-                length = shell32.DragQueryFileW(ctypes.c_void_p(drop_handle), index, None, 0)
-                buffer = ctypes.create_unicode_buffer(length + 1)
-                shell32.DragQueryFileW(ctypes.c_void_p(drop_handle), index, buffer, length + 1)
-                path = Path(buffer.value)
-                if path.is_file():
-                    selected = path
-                    break
-        finally:
-            shell32.DragFinish(ctypes.c_void_p(drop_handle))
+            TkinterDnD._require(self)
+        except Exception as exc:
+            self._log_write(f"Drag-and-drop konnte nicht geladen werden: {exc}")
+            return
+
+        targets = [self, self._sb, self._sb_content]
+        targets.extend(self._iter_widgets(self._drop))
+        for widget in targets:
+            self._register_drop_target(widget)
+
+        self._dnd_enabled = True
+
+    def _iter_widgets(self, widget):
+        yield widget
+        for child in widget.winfo_children():
+            yield from self._iter_widgets(child)
+
+    def _register_drop_target(self, widget):
+        try:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<DropEnter>>", self._on_file_drop_enter, add="+")
+            widget.dnd_bind("<<DropLeave>>", self._on_file_drop_leave, add="+")
+            widget.dnd_bind("<<Drop>>", self._on_file_drop, add="+")
+        except Exception:
+            pass
+
+    def _on_file_drop_enter(self, event=None):
+        if not self._uploading:
+            self._drop.configure(border_color=ACCENT, fg_color=CARD_HOVER)
+        return COPY
+
+    def _on_file_drop_leave(self, event=None):
+        self._drop_leave()
+        return COPY
+
+    def _on_file_drop(self, event):
+        if self._uploading:
+            return COPY
+
+        selected = None
+        for item in self.tk.splitlist(event.data):
+            path = Path(item)
+            if path.is_file():
+                selected = path
+                break
 
         if selected:
-            self.after(0, lambda p=str(selected): self._set_file(p))
+            self._set_file(str(selected))
+        else:
+            messagebox.showwarning("Hinweis", "Bitte eine Datei in das Fenster ziehen, keinen Ordner.")
 
-    def _disable_native_file_drop(self):
-        if sys.platform != "win32":
-            return
-
-        user32 = ctypes.windll.user32
-        shell32 = ctypes.windll.shell32
-        GWLP_WNDPROC = -4
-
-        for hwnd, previous in list(self._drop_window_procs.items()):
-            try:
-                shell32.DragAcceptFiles(ctypes.c_void_p(hwnd), False)
-                user32.SetWindowLongPtrW(ctypes.c_void_p(hwnd), GWLP_WNDPROC, ctypes.c_void_p(previous))
-            except Exception:
-                pass
-        self._drop_window_procs.clear()
-        self._drop_callbacks.clear()
+        self._drop_leave()
+        return COPY
 
     def _build_sidebar(self):
         self._sb = ctk.CTkFrame(self, fg_color=SIDEBAR, corner_radius=0)
@@ -817,7 +798,6 @@ class App(ctk.CTk):
 
     def _on_close(self):
         self._stop_server()
-        self._disable_native_file_drop()
         self.destroy()
 
 if __name__ == "__main__":

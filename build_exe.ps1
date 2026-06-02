@@ -7,6 +7,7 @@ python -m PyInstaller `
   --clean `
   --onefile `
   --windowed `
+  --collect-all tkinterdnd2 `
   --icon "qr_file_sharer_icon.ico" `
   --add-data "qr_file_sharer_icon.ico;." `
   --name "QR File Sharer" `
