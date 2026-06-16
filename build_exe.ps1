@@ -1,8 +1,8 @@
 $ErrorActionPreference = "Stop"
 
-python -m pip install -r requirements-dev.txt
+py -3.12 -m pip install -r requirements-dev.txt
 
-python -m PyInstaller `
+py -3.12 -m PyInstaller `
   --noconfirm `
   --clean `
   --onefile `

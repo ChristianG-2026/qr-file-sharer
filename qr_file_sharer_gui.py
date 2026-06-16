@@ -51,7 +51,7 @@ TEXT_MED    = "#e6ecf8"
 TEXT_LO     = "#b8c5df"
 FONT_MONO   = "Consolas"
 APP_NAME    = "QR File Sharer"
-APP_VER     = "1.0.5"
+APP_VER     = "1.0.6"
 WIN_W, WIN_H = 1120, 820
 SIDEBAR_W    = 420
 
@@ -191,6 +191,8 @@ class App(ctk.CTk):
         self._log_window = None
         self._log_popup_text = None
         self._dnd_enabled = False
+        self._dnd_targets = []
+        self._closing = False
 
         self._build()
         self._enable_file_drop()
@@ -240,20 +242,35 @@ class App(ctk.CTk):
             widget.dnd_bind("<<DropEnter>>", self._on_file_drop_enter, add="+")
             widget.dnd_bind("<<DropLeave>>", self._on_file_drop_leave, add="+")
             widget.dnd_bind("<<Drop>>", self._on_file_drop, add="+")
+            self._dnd_targets.append(widget)
         except Exception:
             pass
 
+    def _disable_file_drop(self):
+        if not self._dnd_enabled:
+            return
+
+        for widget in reversed(self._dnd_targets):
+            try:
+                if widget.winfo_exists():
+                    widget.drop_target_unregister()
+            except Exception:
+                pass
+        self._dnd_targets.clear()
+        self._dnd_enabled = False
+
     def _on_file_drop_enter(self, event=None):
-        if not self._uploading:
+        if not self._uploading and not self._closing:
             self._drop.configure(border_color=ACCENT, fg_color=CARD_HOVER)
         return COPY
 
     def _on_file_drop_leave(self, event=None):
-        self._drop_leave()
+        if not self._closing:
+            self._drop_leave()
         return COPY
 
     def _on_file_drop(self, event):
-        if self._uploading:
+        if self._uploading or self._closing:
             return COPY
 
         selected = None
@@ -773,7 +790,7 @@ class App(ctk.CTk):
             self.srv_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
             self.srv_thread.start()
 
-    def _stop_server(self):
+    def _stop_server(self, update_ui: bool = True):
         if self._uploading:
             return
 
@@ -782,23 +799,50 @@ class App(ctk.CTk):
                 self.server.shutdown()
             except Exception:
                 pass
+            try:
+                self.server.server_close()
+            except Exception:
+                pass
             self.server = None
 
-        self._qr_outer.grid_remove()
-        self._qr_inner.grid()
+        if self.srv_thread and self.srv_thread.is_alive():
+            self.srv_thread.join(timeout=1.5)
+        self.srv_thread = None
 
-        self._url_var.set("")
-        self._badge.set("Offline", TEXT_LO)
-        self._scan_hint.configure(text="Mit Handy scannen →", text_color=TEXT_LO)
-        self._start_btn.configure(state="normal" if self.cur_file else "disabled")
-        self._stop_btn.configure(state="disabled",
-                                  fg_color=SECONDARY, hover_color=SECONDARY_HOVER,
-                                  border_color=BORDER, text_color=TEXT_HI)
-        self._log_write(f"[{datetime.now().strftime('%H:%M:%S')}]  ⏹  Server gestoppt\n")
+        if not update_ui:
+            return
+
+        try:
+            self._qr_outer.grid_remove()
+            self._qr_inner.grid()
+
+            self._url_var.set("")
+            self._badge.set("Offline", TEXT_LO)
+            self._scan_hint.configure(text="Mit Handy scannen ->", text_color=TEXT_LO)
+            self._start_btn.configure(state="normal" if self.cur_file else "disabled")
+            self._stop_btn.configure(state="disabled",
+                                      fg_color=SECONDARY, hover_color=SECONDARY_HOVER,
+                                      border_color=BORDER, text_color=TEXT_HI)
+            self._log_write(f"[{datetime.now().strftime('%H:%M:%S')}]  Server gestoppt\n")
+        except tk.TclError:
+            pass
 
     def _on_close(self):
-        self._stop_server()
-        self.destroy()
+        if self._closing:
+            return
+
+        self._closing = True
+        self.protocol("WM_DELETE_WINDOW", lambda: None)
+        self._disable_file_drop()
+        self._stop_server(update_ui=False)
+
+        try:
+            if self._log_window and self._log_window.winfo_exists():
+                self._log_window.destroy()
+        except tk.TclError:
+            pass
+
+        self.after(50, self.destroy)
 
 if __name__ == "__main__":
     App().mainloop()
